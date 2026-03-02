@@ -2,11 +2,11 @@
 # s3cp — Transfer files between local machine and EC2 instances via S3 + SSM
 #
 # Usage:
-#   s3cp configure                                      # interactive setup
-#   s3cp push <local-path> <instance> <remote-path>    # local → instance
-#   s3cp pull <instance> <remote-path> [local-path]    # instance → local
+#   s3cp configure              # interactive setup
+#   s3cp <source> <destination> # transfer files
 #
-# <instance> can be an Instance ID (i-0abc...) or a Name tag (partial, case-insensitive)
+# Remote paths use the form  instance:/path  where <instance> is an Instance ID
+# (i-0abc...) or a Name tag (partial, case-insensitive).
 
 set -euo pipefail
 
@@ -74,13 +74,14 @@ ${BOLD}s3cp${RESET} v${S3CP_VERSION} — Transfer files between local machine an
 
 ${BOLD}USAGE${RESET}
   s3cp configure
-  s3cp push [-r] <local-path> <instance> [remote-path]
-  s3cp pull [-r] <instance> <remote-path> [local-path]
+  s3cp [options] <local-path>           <instance>:<remote-path>   # push
+  s3cp [options] <instance>:<remote-path>   <local-path>           # pull
 
 ${BOLD}ARGUMENTS${RESET}
+  <source>       Local path  OR  instance:/remote/path
+  <destination>  Local path  OR  instance:/remote/path
   <instance>     Instance ID (i-0abc...) or Name tag (partial match)
-  <remote-path>  Full path on the instance (default: /home/<user>/)
-  <local-path>   Local destination (defaults to current directory)
+  <remote-path>  Full path on the instance (default: /home/<user>/ when omitted)
 
 ${BOLD}OPTIONS${RESET}
   -r, --recursive     Transfer directories (auto tar/untar)
@@ -104,14 +105,12 @@ ${BOLD}CONFIG FILE${RESET}  ${CONFIG_FILE}
 
 ${BOLD}EXAMPLES${RESET}
   s3cp configure
-  s3cp push db-backup.sql <instance> /home/ubuntu/
-  s3cp pull <instance> /var/log/syslog ./
-  s3cp push -r ./my-app <instance> /home/ubuntu/
-  s3cp push -b mybucket -R us-east-1 data.csv <instance> /tmp/
-
-  <instance> accepts both Name tags (partial match) and Instance IDs:
-    s3cp push file.sql my-server /tmp/          # name tag (partial)
-    s3cp push file.sql i-0abc1234def56789a /tmp/ # instance ID
+  s3cp db-backup.sql          my-server:/home/ubuntu/      # push by Name tag
+  s3cp db-backup.sql          i-0abc1234def:/home/ubuntu/  # push by Instance ID
+  s3cp my-server:/var/log/syslog ./                        # pull
+  s3cp -r ./my-app            my-server:/home/ubuntu/      # push directory
+  s3cp -b mybucket -R us-east-1 data.csv my-server:/tmp/   # overrides
+  s3cp my-server:             ./downloads/                 # remote defaults to /home/<user>/
 EOF
   exit "${1:-0}"
 }
@@ -247,7 +246,7 @@ wait_ssm_command() {
           # curl exit 23: write failure, most likely the remote path is a directory
           # and curl tried to overwrite it as a file (missing trailing slash)
           if echo "$stderr_output" | grep -q "curl: (23)"; then
-            warn "Tip: if <remote-path> is a directory, make sure it ends with '/' (e.g. /home/ubuntu/)"
+            warn "Tip: if the destination is a directory, add a trailing slash (e.g. instance:/home/ubuntu/)"
           fi
         fi
         return 1
@@ -494,13 +493,10 @@ require_cmd tar
 # ── Argument parsing ─────────────────────────────────────────
 [[ $# -lt 1 ]] && usage 1
 
-SUBCOMMAND=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    push|pull|configure)
-      SUBCOMMAND="$1"; shift ;;
     -r|--recursive)
       RECURSIVE=true; shift ;;
     -b|--bucket)
@@ -526,18 +522,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$SUBCOMMAND" ]] && { err "Missing command: push or pull"; usage 1; }
+# configure is a special subcommand
+if [[ ${#POSITIONAL[@]} -eq 1 && "${POSITIONAL[0]}" == "configure" ]]; then
+  do_configure
+  exit 0
+fi
 
-case "$SUBCOMMAND" in
-  configure)
-    do_configure
-    ;;
-  push)
-    [[ ${#POSITIONAL[@]} -lt 2 ]] && { err "Usage: s3cp push [options] <local-path> <instance> [remote-path]"; exit 1; }
-    do_push "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${POSITIONAL[2]:-}"
-    ;;
-  pull)
-    [[ ${#POSITIONAL[@]} -lt 2 ]] && { err "Usage: s3cp pull [options] <instance> <remote-path> [local-path]"; exit 1; }
-    do_pull "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${POSITIONAL[2]:-.}"
-    ;;
-esac
+[[ ${#POSITIONAL[@]} -ne 2 ]] && { err "Usage: s3cp [options] <source> <destination>"; usage 1; }
+
+SRC="${POSITIONAL[0]}"
+DST="${POSITIONAL[1]}"
+
+if [[ "$SRC" == *:* && "$DST" == *:* ]]; then
+  err "Cannot transfer between two remote paths"
+  exit 1
+elif [[ "$DST" == *:* ]]; then
+  # push: local → instance:remote
+  dst_instance="${DST%%:*}"
+  dst_rpath="${DST#*:}"
+  do_push "$SRC" "$dst_instance" "${dst_rpath:-}"
+elif [[ "$SRC" == *:* ]]; then
+  # pull: instance:remote → local
+  src_instance="${SRC%%:*}"
+  src_rpath="${SRC#*:}"
+  do_pull "$src_instance" "$src_rpath" "$DST"
+else
+  err "One of <source> or <destination> must be a remote path (instance:/path)"
+  usage 1
+fi
