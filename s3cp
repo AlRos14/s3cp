@@ -242,7 +242,14 @@ wait_ssm_command() {
       Failed|TimedOut|Cancelled|Cancelling)
         local stderr_output
         stderr_output=$(echo "$result" | jq -r '.StandardErrorContent // ""')
-        [[ -n "$stderr_output" ]] && err "Remote error: $stderr_output"
+        if [[ -n "$stderr_output" ]]; then
+          err "Remote error: $stderr_output"
+          # curl exit 23: write failure, most likely the remote path is a directory
+          # and curl tried to overwrite it as a file (missing trailing slash)
+          if echo "$stderr_output" | grep -q "curl: (23)"; then
+            warn "Tip: if <remote-path> is a directory, make sure it ends with '/' (e.g. /home/ubuntu/)"
+          fi
+        fi
         return 1
         ;;
       Pending|InProgress|Delayed)
