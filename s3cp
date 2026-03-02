@@ -71,7 +71,7 @@ usage() {
 ${BOLD}s3cp${RESET} v${S3CP_VERSION} — Transfer files between local machine and EC2 instances
 
 ${BOLD}USAGE${RESET}
-  s3cp configure                                        # interactive setup
+  s3cp configure
   s3cp push [-r] <local-path> <instance> <remote-path>
   s3cp pull [-r] <instance> <remote-path> [local-path]
 
