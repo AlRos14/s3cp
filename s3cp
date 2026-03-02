@@ -20,11 +20,12 @@ load_config() {
     [[ "$key" =~ ^[[:space:]]*# || -z "$key" ]] && continue
     key="${key// /}"; value="${value// /}"
     case "$key" in
-      bucket)  _CF_BUCKET="$value"  ;;
-      region)  _CF_REGION="$value"  ;;
-      profile) _CF_PROFILE="$value" ;;
-      user)    _CF_USER="$value"    ;;
-      timeout) _CF_TIMEOUT="$value" ;;
+      bucket)         _CF_BUCKET="$value"         ;;
+      region)         _CF_REGION="$value"         ;;
+      profile)        _CF_PROFILE="$value"        ;;
+      user)           _CF_USER="$value"           ;;
+      timeout)        _CF_TIMEOUT="$value"        ;;
+      presign_expiry) _CF_PRESIGN_EXPIRY="$value" ;;
     esac
   done < "$CONFIG_FILE"
 }
@@ -37,6 +38,7 @@ AWS_REGION="${S3CP_REGION:-${_CF_REGION:-eu-south-2}}"
 AWS_PROFILE="${S3CP_PROFILE:-${_CF_PROFILE:-}}"
 SSM_USER="${SSM_USER:-${_CF_USER:-ubuntu}}"
 SSM_TIMEOUT="${S3CP_TIMEOUT:-${_CF_TIMEOUT:-300}}"
+PRESIGN_EXPIRY="${S3CP_PRESIGN_EXPIRY:-${_CF_PRESIGN_EXPIRY:-300}}"  # presigned URL TTL in seconds
 RECURSIVE=false
 NO_CLEANUP=false
 
@@ -125,18 +127,21 @@ do_configure() {
   local cur_profile="${AWS_PROFILE:-}"
   local cur_user="${SSM_USER}"
   local cur_timeout="${SSM_TIMEOUT}"
+  local cur_presign="${PRESIGN_EXPIRY}"
 
   read -rp "S3 bucket [${cur_bucket}]: " inp_bucket
   read -rp "AWS region [${cur_region}]: " inp_region
   read -rp "AWS profile (leave blank for default) [${cur_profile:-none}]: " inp_profile
   read -rp "Remote OS user [${cur_user}]: " inp_user
   read -rp "SSM timeout (seconds) [${cur_timeout}]: " inp_timeout
+  read -rp "Presigned URL expiry (seconds) [${cur_presign}]: " inp_presign
 
   local bucket="${inp_bucket:-$cur_bucket}"
   local region="${inp_region:-$cur_region}"
   local profile="${inp_profile:-$cur_profile}"
   local user="${inp_user:-$cur_user}"
   local timeout="${inp_timeout:-$cur_timeout}"
+  local presign="${inp_presign:-$cur_presign}"
 
   mkdir -p "$(dirname "$CONFIG_FILE")"
 
@@ -147,6 +152,7 @@ bucket=${bucket}
 region=${region}
 user=${user}
 timeout=${timeout}
+presign_expiry=${presign}
 EOF
 
   [[ -n "$profile" ]] && echo "profile=${profile}" >> "$CONFIG_FILE"
@@ -326,15 +332,18 @@ do_push() {
   fi
   ok "Uploaded to S3"
 
-  # Step 2: SSM send-command to download on instance
+  # Step 2: Generate presigned GET URL and send curl command to instance
+  info "Generating presigned URL…"
+  local presigned_url
+  presigned_url=$(aws s3 presign "$s3_uri" --expires-in "$PRESIGN_EXPIRY" $(aws_opts))
+
   info "Sending download command to instance…"
   local cmd
   if [[ "$is_dir" == true ]]; then
-    # Ensure remote_path ends with /
     remote_path="${remote_path%/}/"
-    cmd="aws s3 cp '${s3_uri}' '/tmp/${filename}' --region '${AWS_REGION}' && mkdir -p '${remote_path}' && tar -xzf '/tmp/${filename}' -C '${remote_path}' && rm -f '/tmp/${filename}' && chown -R ${SSM_USER}:${SSM_USER} '${remote_path}'"
+    cmd="curl -fsSL -o /tmp/${filename} '${presigned_url}' && mkdir -p '${remote_path}' && tar -xzf /tmp/${filename} -C '${remote_path}' && rm -f /tmp/${filename} && chown -R ${SSM_USER}:${SSM_USER} '${remote_path}'"
   else
-    cmd="aws s3 cp '${s3_uri}' '${remote_path}' --region '${AWS_REGION}' && chown ${SSM_USER}:${SSM_USER} '${remote_path}'"
+    cmd="curl -fsSL -o '${remote_path}' '${presigned_url}' && chown ${SSM_USER}:${SSM_USER} '${remote_path}'"
   fi
 
   local command_id
@@ -398,13 +407,23 @@ do_pull() {
   step "pull ${BOLD}${display_name}${RESET}:${remote_path} → ${BOLD}${local_path}${RESET}"
   echo ""
 
-  # Step 1: SSM send-command to upload from instance to S3
+  # Step 1: Generate presigned PUT URL and send curl upload command to instance
+  info "Generating presigned URL…"
+  local presigned_url
+  presigned_url=$(aws s3api generate-presigned-url \
+    --bucket "$S3_BUCKET" \
+    --key "$s3_key" \
+    --expires-in "$PRESIGN_EXPIRY" \
+    --http-method PUT \
+    $(aws_opts) \
+    --output text)
+
   info "Sending upload command to instance…"
   local cmd
   if [[ "$is_dir" == true ]]; then
-    cmd="tar -czf '/tmp/${filename}' -C '$(dirname "$remote_path")' '$(basename "$remote_path")' && aws s3 cp '/tmp/${filename}' '${s3_uri}' --region '${AWS_REGION}' && rm -f '/tmp/${filename}'"
+    cmd="tar -czf /tmp/${filename} -C '$(dirname "$remote_path")' '$(basename "$remote_path")' && curl -fsSL --upload-file /tmp/${filename} '${presigned_url}' && rm -f /tmp/${filename}"
   else
-    cmd="aws s3 cp '${remote_path}' '${s3_uri}' --region '${AWS_REGION}'"
+    cmd="curl -fsSL --upload-file '${remote_path}' '${presigned_url}'"
   fi
 
   local command_id
