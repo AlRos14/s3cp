@@ -37,7 +37,7 @@ s3cp pull                       auto-deleted                  /var/log/app.log
 
 **EC2 instances:**
 - [SSM Agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent.html) installed and running
-- IAM role with [`iam/policy-ec2.json`](iam/policy-ec2.json) attached
+- `curl` installed (typically pre-installed on most Linux distributions)
 
 ---
 
@@ -97,16 +97,9 @@ aws s3api put-bucket-lifecycle-configuration \
   }'
 ```
 
-### 2. Attach IAM policy to your EC2 instance roles
+### 2. Configure AWS credentials on your local machine
 
-```bash
-aws iam put-role-policy \
-  --role-name YOUR-INSTANCE-ROLE \
-  --policy-name s3cp-access \
-  --policy-document file://iam/policy-ec2.json
-```
-
-Replace `nutraliascp` in [`iam/policy-ec2.json`](iam/policy-ec2.json) with your bucket name.
+Ensure your AWS CLI has `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `ssm:SendCommand`, `ssm:GetCommandInvocation`, and `ec2:DescribeInstances` permissions (see `iam/policy-user.json` for reference).
 
 ### 3. Configure s3cp
 
@@ -121,6 +114,7 @@ bucket=your-bucket-name
 region=your-region
 user=ubuntu
 timeout=300
+presign_expiry=300
 # profile=myprofile
 ```
 
@@ -140,13 +134,13 @@ s3cp pull <instance> <remote-path> [local-path]  # instance → local
 
 ```bash
 # Send a file to an instance (by name)
-s3cp push backup.sql OdooFire /home/ubuntu/
+s3cp push backup.sql instanceName /home/ubuntu/
 
 # Download a log file from an instance
 s3cp pull NutriaServer /var/log/app.log ./
 
 # Transfer a directory
-s3cp push -r ./my-app OdooFire /home/ubuntu/
+s3cp push -r ./my-app instanceName /home/ubuntu/
 
 # Use by instance ID
 s3cp push data.csv i-052c8baf8bbe98f2f /tmp/
@@ -182,6 +176,7 @@ CLI flag  →  environment variable  →  config file  →  built-in default
 | `profile` | `-p` / `--profile` | `S3CP_PROFILE` |
 | `user` | `-u` / `--user` | `SSM_USER` |
 | `timeout` | `-t` / `--timeout` | `S3CP_TIMEOUT` |
+| `presign_expiry` | — | `S3CP_PRESIGN_EXPIRY` |
 
 ---
 
@@ -189,31 +184,45 @@ CLI flag  →  environment variable  →  config file  →  built-in default
 
 ### Push (local → instance)
 
-1. Uploads the local file to `s3://BUCKET/transfers/<uuid>/filename`
-2. Sends `aws s3 cp` via `ssm:SendCommand` to the instance
-3. Polls `ssm:GetCommandInvocation` until complete
-4. Deletes the S3 object
+1. Uploads the local file to `s3://BUCKET/transfers/<uuid>/filename` (server-side encrypted)
+2. Generates a presigned URL (time-limited, single-use credentials)
+3. Sends `curl` download command via `ssm:SendCommand` to the instance
+4. Polls `ssm:GetCommandInvocation` until complete
+5. Deletes the S3 object
 
 ### Pull (instance → local)
 
-1. Sends `aws s3 cp` via `ssm:SendCommand` to upload from the instance to S3
-2. Polls `ssm:GetCommandInvocation` until complete
-3. Downloads from S3 to the local path
-4. Deletes the S3 object
+1. Generates a presigned PUT URL with temporary credentials
+2. Sends `curl` upload command via `ssm:SendCommand` to the instance
+3. Polls `ssm:GetCommandInvocation` until complete
+4. Downloads from S3 to the local path
+5. Deletes the S3 object
 
-S3 objects are deleted immediately after each transfer. The 7-day lifecycle rule is a safety net in case of interrupted transfers.
+**Security note:** Presigned URLs are time-limited and contain temporary credentials. EC2 instances never store permanent AWS credentials. S3 objects are deleted immediately after each transfer. The 7-day lifecycle rule is a safety net in case of interrupted transfers.
 
 ---
 
 ## IAM reference
 
-### EC2 instance role (`iam/policy-ec2.json`)
+### Local user IAM policy
 
-Allows the instance to read/write/delete from the S3 bucket.
+Your AWS IAM user needs the following permissions:
+- `s3:GetObject` - download files from S3
+- `s3:PutObject` - upload files to S3  
+- `s3:DeleteObject` - clean up temporary transfer objects
+- `ssm:SendCommand` - send remote commands to instances via SSM
+- `ssm:GetCommandInvocation` - poll command status
+- `ec2:DescribeInstances` - resolve instance names to IDs
 
-### Local user policy
+See [`iam/policy-user.json`](iam/policy-user.json) for a complete policy definition.
 
-Your AWS IAM user needs `ssm:SendCommand`, `ssm:GetCommandInvocation`, and S3 read/write permissions on the bucket. Example in [`iam/policy-user.json`](iam/policy-user.json).
+### EC2 instance requirements
+
+EC2 instances **do not need S3 permissions** or AWS credentials. They only need:
+- **SSM Agent** - to receive and execute commands
+- **curl** - to download/upload files via presigned URLs (pre-installed on most Linux distributions)
+
+Presigned URLs are generated on the local machine with temporary credentials and contain an expiration time (default: 5 minutes).
 
 ---
 
