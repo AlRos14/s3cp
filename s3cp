@@ -72,12 +72,12 @@ ${BOLD}s3cp${RESET} v${S3CP_VERSION} — Transfer files between local machine an
 
 ${BOLD}USAGE${RESET}
   s3cp configure
-  s3cp push [-r] <local-path> <instance> <remote-path>
+  s3cp push [-r] <local-path> <instance> [remote-path]
   s3cp pull [-r] <instance> <remote-path> [local-path]
 
 ${BOLD}ARGUMENTS${RESET}
   <instance>     Instance ID (i-0abc...) or Name tag (partial match)
-  <remote-path>  Full path on the instance (directory or file)
+  <remote-path>  Full path on the instance (default: /home/<user>/)
   <local-path>   Local destination (defaults to current directory)
 
 ${BOLD}OPTIONS${RESET}
@@ -269,7 +269,7 @@ s3_cleanup() {
 do_push() {
   local local_path="$1"
   local target="$2"
-  local remote_path="$3"
+  local remote_path="${3:-/home/${SSM_USER}/}"
 
   local is_dir=false
   if [[ -d "$local_path" ]]; then
@@ -507,8 +507,8 @@ case "$SUBCOMMAND" in
     do_configure
     ;;
   push)
-    [[ ${#POSITIONAL[@]} -lt 3 ]] && { err "Usage: s3cp push [options] <local-path> <instance> <remote-path>"; exit 1; }
-    do_push "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${POSITIONAL[2]}"
+    [[ ${#POSITIONAL[@]} -lt 2 ]] && { err "Usage: s3cp push [options] <local-path> <instance> [remote-path]"; exit 1; }
+    do_push "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${POSITIONAL[2]:-}"
     ;;
   pull)
     [[ ${#POSITIONAL[@]} -lt 2 ]] && { err "Usage: s3cp pull [options] <instance> <remote-path> [local-path]"; exit 1; }
