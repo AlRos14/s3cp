@@ -94,7 +94,7 @@ ${BOLD}OPTIONS${RESET}
   -h, --help          Show this help
 
 ${BOLD}CONFIG FILE${RESET}  ${CONFIG_FILE}
-  bucket=nutraliascp
+  bucket=bucketname
   region=eu-south-2
   user=ubuntu
   timeout=300
