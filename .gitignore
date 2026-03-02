@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V3
+.Trashes
+ehthumbs.db
+Thumbs.db
+*~
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local config (never commit personal config)
+.env
+config.local
+
+# Test artifacts
+/tmp/
+*.tar.gz
