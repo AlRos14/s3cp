@@ -42,8 +42,8 @@ NO_CLEANUP=false
 
 # ── Colours ──────────────────────────────────────────────────
 if [[ -t 1 ]]; then
-  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-  CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+  RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+  CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 else
   RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
 fi
@@ -102,10 +102,14 @@ ${BOLD}CONFIG FILE${RESET}  ${CONFIG_FILE}
 
 ${BOLD}EXAMPLES${RESET}
   s3cp configure
-  s3cp push backup.sql OdooFire /home/ubuntu/
-  s3cp pull NutriaServer /var/log/syslog ./
-  s3cp push -r ./my-app OdooFire /home/ubuntu/
-  s3cp push -b mybucket -R us-east-1 data.csv MyServer /tmp/
+  s3cp push db-backup.sql <instance> /home/ubuntu/
+  s3cp pull <instance> /var/log/syslog ./
+  s3cp push -r ./my-app <instance> /home/ubuntu/
+  s3cp push -b mybucket -R us-east-1 data.csv <instance> /tmp/
+
+  <instance> accepts both Name tags (partial match) and Instance IDs:
+    s3cp push file.sql my-server /tmp/          # name tag (partial)
+    s3cp push file.sql i-0abc1234def56789a /tmp/ # instance ID
 EOF
   exit "${1:-0}"
 }
