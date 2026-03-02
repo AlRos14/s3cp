@@ -7,10 +7,10 @@
 ```
 local machine                    S3 (temp)                  EC2 instance
 ─────────────  ── upload ──▶  ──────────────  ── download ──▶  ──────────────
-s3cp push                       auto-deleted                  /home/ubuntu/
+s3cp file.sql server:/home/ubuntu/            auto-deleted
 
 ─────────────  ◀─ download ──  ──────────────  ◀── upload ──  ──────────────
-s3cp pull                       auto-deleted                  /var/log/app.log
+s3cp server:/var/log/app.log ./               auto-deleted
 ```
 
 ---
@@ -123,30 +123,34 @@ presign_expiry=300
 ## Usage
 
 ```bash
-s3cp configure                                   # interactive setup (run once)
-s3cp push <local-path> <instance> <remote-path>  # local → instance
-s3cp pull <instance> <remote-path> [local-path]  # instance → local
+s3cp configure                               # interactive setup (run once)
+s3cp <local-path> <instance>:<remote-path>   # push: local → instance
+s3cp <instance>:<remote-path> <local-path>   # pull: instance → local
 ```
 
-`<instance>` can be an **Instance ID** (`i-0abc123...`) or a **Name tag** (partial, case-insensitive).
+`<instance>` can be an **Instance ID** (`i-0abc123...`) or a **Name tag** (partial, case-insensitive).  
+`<remote-path>` can be omitted to default to `/home/<user>/` — e.g. `my-server:`.
 
 ### Examples
 
 ```bash
-# Send a file to an instance (by name)
-s3cp push backup.sql instanceName /home/ubuntu/
+# Send a file to an instance (by name tag)
+s3cp backup.sql my-server:/home/ubuntu/
 
 # Download a log file from an instance
-s3cp pull NutriaServer /var/log/app.log ./
+s3cp my-server:/var/log/app.log ./
 
 # Transfer a directory
-s3cp push -r ./my-app instanceName /home/ubuntu/
+s3cp -r ./my-app my-server:/home/ubuntu/
 
 # Use by instance ID
-s3cp push data.csv i-052c8baf8bbe98f2f /tmp/
+s3cp data.csv i-052c8baf8bbe98f2f:/tmp/
+
+# Omit remote path — defaults to /home/ubuntu/
+s3cp file.txt my-server:
 
 # One-off with different bucket/region (no config change)
-s3cp push -b my-other-bucket -R us-east-1 file.txt MyServer /tmp/
+s3cp -b my-other-bucket -R us-east-1 file.txt my-server:/tmp/
 ```
 
 ### Options
