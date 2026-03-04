@@ -181,7 +181,7 @@ resolve_instance() {
       '.[][] | select(.Name != null) | select(.Name | ascii_downcase | contains($pat | ascii_downcase)) | "\(.ID)\t\(.Name)"')
 
   local count
-  count=$(echo "$results" | grep -c . 2>/dev/null || echo 0)
+  count=$(echo "$results" | grep -c . 2>/dev/null || true)
 
   if [[ $count -eq 0 ]]; then
     err "No running instance found matching '${target}'"
