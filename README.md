@@ -244,4 +244,4 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) © Alejandro Ros
+[MIT](LICENSE) © Alejandro Rosado
