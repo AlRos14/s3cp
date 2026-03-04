@@ -194,6 +194,8 @@ CLI flag  →  environment variable  →  config file  →  built-in default
 4. Polls `ssm:GetCommandInvocation` until complete
 5. Deletes the S3 object
 
+If destination looks like a directory, include a trailing slash (for example `my-server:/home/ubuntu/`) so the remote command writes to a file path inside that directory.
+
 ### Pull (instance → local)
 
 1. Generates a presigned PUT URL with temporary credentials
