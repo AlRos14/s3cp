@@ -50,22 +50,40 @@ else
   RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
 fi
 
+_CLEANUP_FILES=()
+cleanup_temp_files() {
+  for f in "${_CLEANUP_FILES[@]}"; do
+    rm -f "$f"
+  done
+}
+trap cleanup_temp_files EXIT
+
 err()  { echo -e "${RED}✖ $*${RESET}" >&2; }
 info() { echo -e "${CYAN}ℹ $*${RESET}"; }
 ok()   { echo -e "${GREEN}✔ $*${RESET}"; }
 warn() { echo -e "${YELLOW}⚠ $*${RESET}"; }
 step() { echo -e "${BOLD}▶ $*${RESET}"; }
 
+# Reject values that could break out of shell strings in SSM commands
+validate_shell_safe() {
+  local label="$1" value="$2"
+  if [[ "$value" =~ [\'\`\$\;\|\&\(\)\{\}\<\>\\$'\n'$'\0'] ]]; then
+    err "${label} contains unsafe characters: ${value}"
+    exit 1
+  fi
+}
+
 # ── Helpers ──────────────────────────────────────────────────
 require_cmd() {
   command -v "$1" &>/dev/null || { err "Required command not found: $1"; exit 1; }
 }
 
-# Build common AWS CLI flags
-aws_opts() {
-  local opts="--region ${AWS_REGION}"
-  [[ -n "$AWS_PROFILE" ]] && opts+=" --profile ${AWS_PROFILE}"
-  echo "$opts"
+# Build common AWS CLI flags (populated after argument parsing)
+build_aws_opts() {
+  AWS_OPTS=( --region "$AWS_REGION" )
+  if [[ -n "$AWS_PROFILE" ]]; then
+    AWS_OPTS+=( --profile "$AWS_PROFILE" )
+  fi
 }
 
 usage() {
@@ -142,6 +160,11 @@ do_configure() {
   local timeout="${inp_timeout:-$cur_timeout}"
   local presign="${inp_presign:-$cur_presign}"
 
+  if [[ -z "$bucket" ]]; then
+    err "S3 bucket name is required"
+    exit 1
+  fi
+
   mkdir -p "$(dirname "$CONFIG_FILE")"
 
   cat > "$CONFIG_FILE" <<EOF
@@ -156,6 +179,8 @@ EOF
 
   [[ -n "$profile" ]] && echo "profile=${profile}" >> "$CONFIG_FILE"
 
+  chmod 600 "$CONFIG_FILE"
+
   echo ""
   ok "Config saved to ${CONFIG_FILE}"
 }
@@ -164,11 +189,11 @@ EOF
 resolve_instance() {
   local target="$1"
 
-  if [[ "$target" =~ ^i-[0-9a-f]+$ ]]; then
+  if [[ "$target" =~ ^i-[0-9a-f]{8}([0-9a-f]{9})?$ ]]; then
     INSTANCE_ID="$target"
     INSTANCE_NAME=$(aws ec2 describe-instances --instance-ids "$target" \
       --query "Reservations[].Instances[].Tags[?Key=='Name']|[0][0].Value" \
-      --output text $(aws_opts) 2>/dev/null || true)
+      --output text "${AWS_OPTS[@]}" 2>/dev/null || true)
     [[ "$INSTANCE_NAME" == "None" || -z "$INSTANCE_NAME" ]] && INSTANCE_NAME=""
     return 0
   fi
@@ -177,7 +202,7 @@ resolve_instance() {
   local results
   results=$(aws ec2 describe-instances \
     --query "Reservations[].Instances[?State.Name=='running'].{ID:InstanceId,Name:Tags[?Key=='Name']|[0].Value}" \
-    --output json $(aws_opts) | jq -r --arg pat "$target" \
+    --output json "${AWS_OPTS[@]}" | jq -r --arg pat "$target" \
       '.[][] | select(.Name != null) | select(.Name | ascii_downcase | contains($pat | ascii_downcase)) | "\(.ID)\t\(.Name)"')
 
   local count
@@ -228,7 +253,7 @@ wait_ssm_command() {
     result=$(aws ssm get-command-invocation \
       --command-id "$command_id" \
       --instance-id "$instance_id" \
-      $(aws_opts) \
+      "${AWS_OPTS[@]}" \
       --output json 2>/dev/null || echo '{"Status":"Pending"}')
 
     local status
@@ -274,7 +299,7 @@ s3_cleanup() {
     info "Keeping S3 object: s3://${S3_BUCKET}/${s3_key}"
     return 0
   fi
-  aws s3 rm "s3://${S3_BUCKET}/${s3_key}" $(aws_opts) &>/dev/null || true
+  aws s3 rm "s3://${S3_BUCKET}/${s3_key}" "${AWS_OPTS[@]}" --quiet 2>/dev/null || warn "Failed to clean up S3 object: s3://${S3_BUCKET}/${s3_key}"
 }
 
 # ── PUSH: local → instance ──────────────────────────────────
@@ -322,16 +347,16 @@ do_push() {
   if [[ "$is_dir" == true ]]; then
     local tmp_tar
     tmp_tar=$(mktemp /tmp/s3cp-XXXXXX.tar.gz)
-    trap "rm -f '$tmp_tar'" EXIT
+    _CLEANUP_FILES+=("$tmp_tar")
     tar -czf "$tmp_tar" -C "$(dirname "$local_path")" "$(basename "$local_path")"
-    if ! aws s3 cp "$tmp_tar" "$s3_uri" $(aws_opts) --quiet; then
+    if ! aws s3 cp -- "$tmp_tar" "$s3_uri" "${AWS_OPTS[@]}" --quiet; then
       err "Failed to upload to S3"
       rm -f "$tmp_tar"
       exit 1
     fi
     rm -f "$tmp_tar"
   else
-    if ! aws s3 cp "$local_path" "$s3_uri" $(aws_opts) --quiet; then
+    if ! aws s3 cp -- "$local_path" "$s3_uri" "${AWS_OPTS[@]}" --quiet; then
       err "Failed to upload to S3"
       exit 1
     fi
@@ -341,13 +366,16 @@ do_push() {
   # Step 2: Generate presigned GET URL and send curl command to instance
   info "Generating presigned URL…"
   local presigned_url
-  presigned_url=$(aws s3 presign "$s3_uri" --expires-in "$PRESIGN_EXPIRY" $(aws_opts))
+  presigned_url=$(aws s3 presign "$s3_uri" --expires-in "$PRESIGN_EXPIRY" "${AWS_OPTS[@]}")
 
   info "Sending download command to instance…"
+  validate_shell_safe "filename" "$filename"
+  validate_shell_safe "remote path" "$remote_path"
+  validate_shell_safe "user" "$SSM_USER"
   local cmd
   if [[ "$is_dir" == true ]]; then
     remote_path="${remote_path%/}/"
-    cmd="curl -fsSL -o /tmp/${filename} '${presigned_url}' && mkdir -p '${remote_path}' && tar -xzf /tmp/${filename} -C '${remote_path}' && rm -f /tmp/${filename} && chown -R ${SSM_USER}:${SSM_USER} '${remote_path}'"
+    cmd="curl -fsSL -o /tmp/${filename} '${presigned_url}' && mkdir -p '${remote_path}' && tar --no-absolute-names -xzf /tmp/${filename} -C '${remote_path}' && rm -f /tmp/${filename} && chown -R ${SSM_USER}:${SSM_USER} '${remote_path}'"
   else
     cmd="curl -fsSL -o '${remote_path}' '${presigned_url}' && chown ${SSM_USER}:${SSM_USER} '${remote_path}'"
   fi
@@ -358,7 +386,7 @@ do_push() {
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[\"$cmd\"]" \
     --timeout-seconds "$SSM_TIMEOUT" \
-    $(aws_opts) \
+    "${AWS_OPTS[@]}" \
     --output json | jq -r '.Command.CommandId')
 
   if [[ -z "$command_id" || "$command_id" == "null" ]]; then
@@ -421,10 +449,13 @@ do_pull() {
     --key "$s3_key" \
     --expires-in "$PRESIGN_EXPIRY" \
     --http-method PUT \
-    $(aws_opts) \
+    "${AWS_OPTS[@]}" \
     --output text)
 
   info "Sending upload command to instance…"
+  validate_shell_safe "filename" "$filename"
+  validate_shell_safe "remote path" "$remote_path"
+  validate_shell_safe "user" "$SSM_USER"
   local cmd
   if [[ "$is_dir" == true ]]; then
     cmd="tar -czf /tmp/${filename} -C '$(dirname "$remote_path")' '$(basename "$remote_path")' && curl -fsSL --upload-file /tmp/${filename} '${presigned_url}' && rm -f /tmp/${filename}"
@@ -438,7 +469,7 @@ do_pull() {
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[\"$cmd\"]" \
     --timeout-seconds "$SSM_TIMEOUT" \
-    $(aws_opts) \
+    "${AWS_OPTS[@]}" \
     --output json | jq -r '.Command.CommandId')
 
   if [[ -z "$command_id" || "$command_id" == "null" ]]; then
@@ -462,18 +493,19 @@ do_pull() {
   if [[ "$is_dir" == true ]]; then
     local tmp_tar
     tmp_tar=$(mktemp /tmp/s3cp-XXXXXX.tar.gz)
-    if ! aws s3 cp "$s3_uri" "$tmp_tar" $(aws_opts) --quiet; then
+    _CLEANUP_FILES+=("$tmp_tar")
+    if ! aws s3 cp "$s3_uri" "$tmp_tar" "${AWS_OPTS[@]}" --quiet; then
       err "Failed to download from S3"
       rm -f "$tmp_tar"
       s3_cleanup "$s3_key"
       exit 1
     fi
     mkdir -p "$local_path"
-    tar -xzf "$tmp_tar" -C "$local_path"
+    tar --no-absolute-names -xzf "$tmp_tar" -C "$local_path"
     rm -f "$tmp_tar"
     ok "Extracted to ${local_path}"
   else
-    if ! aws s3 cp "$s3_uri" "$local_path" $(aws_opts) --quiet; then
+    if ! aws s3 cp "$s3_uri" "$local_path" "${AWS_OPTS[@]}" --quiet; then
       err "Failed to download from S3"
       s3_cleanup "$s3_key"
       exit 1
@@ -500,14 +532,19 @@ while [[ $# -gt 0 ]]; do
     -r|--recursive)
       RECURSIVE=true; shift ;;
     -b|--bucket)
+      [[ $# -lt 2 ]] && { err "--bucket requires a value"; exit 1; }
       S3_BUCKET="$2"; shift 2 ;;
     -R|--region)
+      [[ $# -lt 2 ]] && { err "--region requires a value"; exit 1; }
       AWS_REGION="$2"; shift 2 ;;
     -p|--profile)
+      [[ $# -lt 2 ]] && { err "--profile requires a value"; exit 1; }
       AWS_PROFILE="$2"; shift 2 ;;
     -u|--user)
+      [[ $# -lt 2 ]] && { err "--user requires a value"; exit 1; }
       SSM_USER="$2"; shift 2 ;;
     -t|--timeout)
+      [[ $# -lt 2 ]] && { err "--timeout requires a value"; exit 1; }
       SSM_TIMEOUT="$2"; shift 2 ;;
     --no-cleanup)
       NO_CLEANUP=true; shift ;;
@@ -522,6 +559,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Validate numeric parameters
+[[ "$SSM_TIMEOUT" =~ ^[0-9]+$ ]] || { err "timeout must be a positive integer: $SSM_TIMEOUT"; exit 1; }
+[[ "$PRESIGN_EXPIRY" =~ ^[0-9]+$ ]] || { err "presign_expiry must be a positive integer: $PRESIGN_EXPIRY"; exit 1; }
+
 # configure is a special subcommand
 if [[ ${#POSITIONAL[@]} -eq 1 && "${POSITIONAL[0]}" == "configure" ]]; then
   do_configure
@@ -529,6 +570,10 @@ if [[ ${#POSITIONAL[@]} -eq 1 && "${POSITIONAL[0]}" == "configure" ]]; then
 fi
 
 [[ ${#POSITIONAL[@]} -ne 2 ]] && { err "Usage: s3cp [options] <source> <destination>"; usage 1; }
+
+build_aws_opts
+
+[[ -z "$S3_BUCKET" ]] && { err "No S3 bucket configured. Run 's3cp configure' or set S3CP_BUCKET"; exit 1; }
 
 SRC="${POSITIONAL[0]}"
 DST="${POSITIONAL[1]}"
@@ -545,6 +590,7 @@ elif [[ "$SRC" == *:* ]]; then
   # pull: instance:remote → local
   src_instance="${SRC%%:*}"
   src_rpath="${SRC#*:}"
+  [[ -z "$src_rpath" ]] && src_rpath="/home/${SSM_USER}/"
   do_pull "$src_instance" "$src_rpath" "$DST"
 else
   err "One of <source> or <destination> must be a remote path (instance:/path)"
