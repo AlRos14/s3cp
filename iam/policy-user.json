@@ -12,12 +12,6 @@
       "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
     },
     {
-      "Sid": "S3cpListBucket",
-      "Effect": "Allow",
-      "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
-    },
-    {
       "Sid": "SSMSendCommand",
       "Effect": "Allow",
       "Action": [
