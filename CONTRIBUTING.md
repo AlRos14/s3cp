@@ -27,15 +27,20 @@ Thank you for considering a contribution! This is a small, focused tool — cont
 The script has no build step. To test locally:
 
 ```bash
-# Syntax check
+# Run the test suite (no AWS credentials needed)
+bash tests/s3cp_test.sh
+
+# Verbose output (shows passing tests too)
+bash tests/s3cp_test.sh -v
+
+# Syntax check only
 bash -n s3cp
 
-# Run help
-bash s3cp --help
-
 # Run against real AWS (requires configured credentials and a test bucket)
-S3CP_BUCKET=my-test-bucket S3CP_REGION=eu-south-2 bash s3cp push test.txt MyInstance /tmp/
+S3CP_BUCKET=my-test-bucket S3CP_REGION=eu-south-2 bash s3cp file.txt MyInstance:/tmp/
 ```
+
+**All tests must pass before submitting a PR.**
 
 ---
 
@@ -78,6 +83,7 @@ refactor: extract aws_opts helper to deduplicate CLI flag building
 - **One concern per PR** — don't bundle unrelated changes
 - **Update CHANGELOG.md** under `[Unreleased]` with your change
 - **Keep it shell** — no Python, no Node, no compiled dependencies; the script must run with `bash`, `aws`, and `jq` only
+- **Run `bash tests/s3cp_test.sh`** — all tests must pass
 - **Test with real AWS** if possible, or describe how you tested
 - **Update README.md** if you add or change user-facing behaviour
 

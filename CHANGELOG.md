@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- Test suite (`tests/s3cp_test.sh`) — 75 tests covering argument parsing, input validation, config loading, security hardening, and IAM policy; runs without AWS credentials
+
+### Changed
+- Refactored `aws_opts()` from echo-based function to array (`AWS_OPTS`) for safe word splitting
+- Replaced per-function `trap` with cumulative cleanup function to prevent trap overwrite
+- Config file now written with `chmod 600` permissions
+- S3 cleanup failures now emit a warning instead of silent suppression
+- IAM policy (`iam/policy-user.json`) trimmed: removed unused `s3:ListBucket`
+
+### Fixed
+- Command injection via SSM commands: added `validate_shell_safe()` to reject dangerous characters in filenames, remote paths, and usernames
+- Tar path traversal (zip-slip): added `--no-absolute-names` to all `tar -xzf` calls
+- `build_aws_opts` silently exiting when no AWS profile is set (`set -e` + short-circuit return)
+- Missing value guards on `--bucket`, `--region`, `--profile`, `--user`, `--timeout` flags
+- Numeric validation for `timeout` and `presign_expiry` parameters
+- Early validation when S3 bucket is not configured
+- Empty remote path on pull now defaults to `/home/<user>/`
+- Instance ID regex tightened to match real EC2 format (8 or 17 hex chars)
+- `configure` now rejects empty bucket name
+- Added `--` separator on `aws s3 cp` source arguments to protect against filenames starting with `-`
+
+### Security
+- Documented presigned URL CloudTrail visibility in README
+
 ## [1.0.1] - 2026-03-04
 
 ### Changed

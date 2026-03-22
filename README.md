@@ -204,7 +204,9 @@ If destination looks like a directory, include a trailing slash (for example `my
 4. Downloads from S3 to the local path
 5. Deletes the S3 object
 
-**Security note:** Presigned URLs are time-limited and contain temporary credentials. EC2 instances never store permanent AWS credentials. S3 objects are deleted immediately after each transfer. The 7-day lifecycle rule is a safety net in case of interrupted transfers.
+**Security note:** Presigned URLs are time-limited (default: 5 minutes) and contain temporary credentials. EC2 instances never store permanent AWS credentials. S3 objects are deleted immediately after each transfer. The 7-day lifecycle rule is a safety net in case of interrupted transfers.
+
+> ⚠️ **CloudTrail visibility:** Presigned URLs are passed as SSM command parameters, which are logged in CloudTrail and visible in the SSM console. Anyone with CloudTrail or SSM read access in your account can see the presigned URL within its expiry window. Use short `presign_expiry` values and restrict CloudTrail/SSM access appropriately.
 
 ---
 
