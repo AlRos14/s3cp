@@ -15,7 +15,7 @@ info() { echo -e "${CYAN}ℹ $*${RESET}"; }
 ok()   { echo -e "${GREEN}✔ $*${RESET}"; }
 
 # Check dependencies
-for cmd in aws jq; do
+for cmd in aws jq openssl; do
   command -v "$cmd" &>/dev/null || {
     echo "✖ Required command not found: $cmd" >&2
     exit 1

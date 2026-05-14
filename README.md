@@ -33,6 +33,7 @@ s3cp server:/var/log/app.log ./               auto-deleted
 
 **Local machine:**
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) configured with credentials + MFA
+- [`openssl`](https://www.openssl.org/) (used locally to sign presigned PUT URLs for pulls)
 - [`jq`](https://stedolan.github.io/jq/) (`apt install jq` / `brew install jq`)
 
 **EC2 instances:**

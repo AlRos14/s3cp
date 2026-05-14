@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+
+## [1.0.2] - 2026-05-14
+
+### Changed
+- Fixed the original curl-only `pull` flow so EC2 instances only need SSM Agent and `curl`
+- Added local OpenSSL-based SigV4 signing for presigned PUT URLs during `pull`
+- Updated local requirements and install guidance to include `openssl`
+
+### Fixed
+- Replaced the unsupported `aws s3api generate-presigned-url` pull path without introducing an instance-side AWS CLI dependency
 
 ### Added
 - Test suite (`tests/s3cp_test.sh`) — 75 tests covering argument parsing, input validation, config loading, security hardening, and IAM policy; runs without AWS credentials

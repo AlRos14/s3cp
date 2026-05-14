@@ -369,7 +369,90 @@ else
   fail "s3_temp_key with spaces unexpected: $key"
 fi
 
-# ── 13. Config file handling ────────────────────────────────
+# ── 13. Pull flow uses presigned PUT URL ────────────────────
+section "Pull flow — presigned PUT upload"
+
+mkdir -p "$MOCK_DIR/downloads"
+SSM_COMMANDS_FILE="$MOCK_DIR/ssm-command.log"
+LOCAL_S3_DOWNLOAD_FILE="$MOCK_DIR/local-s3-download.log"
+SSM_COMMANDS_ARG=""
+LOCAL_S3_DOWNLOAD_CALL=""
+
+aws() {
+  if [[ "$1" == "configure" && "$2" == "export-credentials" ]]; then
+    cat <<'JSON'
+{"Version":1,"AccessKeyId":"AKIDEXAMPLE","SecretAccessKey":"wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY","SessionToken":"token/with+special=chars"}
+JSON
+    return 0
+  fi
+
+  if [[ "$1" == "ssm" && "$2" == "send-command" ]]; then
+    local arg
+    for arg in "$@"; do
+      if [[ "$arg" == commands=* ]]; then
+        printf '%s' "$arg" > "$SSM_COMMANDS_FILE"
+      fi
+    done
+    printf '{"Command":{"CommandId":"cmd-123"}}\n'
+    return 0
+  fi
+
+  if [[ "$1" == "s3" && "$2" == "cp" ]]; then
+    printf '%s' "$*" > "$LOCAL_S3_DOWNLOAD_FILE"
+    return 0
+  fi
+
+  return 0
+}
+
+resolve_instance() {
+  INSTANCE_ID="i-0abc1234"
+  INSTANCE_NAME="mock-instance"
+}
+
+wait_ssm_command() { return 0; }
+s3_cleanup() { return 0; }
+sigv4_now() { printf '20260514T120000Z 20260514\n'; }
+
+S3_BUCKET="test-bucket"
+AWS_REGION="eu-south-2"
+AWS_OPTS=( --region "$AWS_REGION" )
+SSM_TIMEOUT=30
+NO_CLEANUP=false
+RECURSIVE=false
+PRESIGN_EXPIRY=300
+
+expected_put_url="https://s3.eu-south-2.amazonaws.com/test-bucket/transfers/example/products.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDEXAMPLE%2F20260514%2Feu-south-2%2Fs3%2Faws4_request&X-Amz-Date=20260514T120000Z&X-Amz-Expires=300&X-Amz-Security-Token=token%2Fwith%2Bspecial%3Dchars&X-Amz-SignedHeaders=host&X-Amz-Signature=8cf0275f95a802e884167de601caf35fa87695985118c3fd294438f6e68b34a0"
+put_url=$(generate_s3_put_presigned_url "test-bucket" "transfers/example/products.json" "300")
+if [[ "$put_url" == "$expected_put_url" ]]; then
+  pass "generate_s3_put_presigned_url matches the expected SigV4 URL"
+else
+  fail "generate_s3_put_presigned_url mismatch" "$put_url"
+fi
+
+do_pull "mock-instance" "/tmp/products.json" "$MOCK_DIR/downloads" >/dev/null 2>&1
+SSM_COMMANDS_ARG=$(cat "$SSM_COMMANDS_FILE" 2>/dev/null)
+LOCAL_S3_DOWNLOAD_CALL=$(cat "$LOCAL_S3_DOWNLOAD_FILE" 2>/dev/null)
+
+if [[ "$SSM_COMMANDS_ARG" == *"curl -fsSL --upload-file '/tmp/products.json' 'https://s3.eu-south-2.amazonaws.com/test-bucket/transfers/"* &&
+      "$SSM_COMMANDS_ARG" == *"/products.json?X-Amz-Algorithm=AWS4-HMAC-SHA256"* &&
+      "$SSM_COMMANDS_ARG" == *"X-Amz-Credential=AKIDEXAMPLE%2F20260514%2Feu-south-2%2Fs3%2Faws4_request"* &&
+      "$SSM_COMMANDS_ARG" == *"X-Amz-Expires=300"* &&
+      "$SSM_COMMANDS_ARG" == *"X-Amz-Security-Token=token%2Fwith%2Bspecial%3Dchars"* &&
+      "$SSM_COMMANDS_ARG" == *"X-Amz-Signature="* ]]; then
+  pass "pull sends instance-side curl upload with a presigned PUT URL"
+else
+  fail "pull SSM command unexpected" "$SSM_COMMANDS_ARG"
+fi
+
+if [[ "$LOCAL_S3_DOWNLOAD_CALL" == s3\ cp\ s3://test-bucket/transfers/* &&
+      "$LOCAL_S3_DOWNLOAD_CALL" == *"$MOCK_DIR/downloads/products.json"* ]]; then
+  pass "pull still downloads the uploaded object back to the local path"
+else
+  fail "pull local S3 download unexpected" "$LOCAL_S3_DOWNLOAD_CALL"
+fi
+
+# ── 14. Config file handling ────────────────────────────────
 section "Config file — load_config"
 
 # Write a test config
@@ -446,7 +529,7 @@ else
   fail "missing config file modified values"
 fi
 
-# ── 14. Config file permissions ─────────────────────────────
+# ── 15. Config file permissions ─────────────────────────────
 section "Config file — permissions after configure"
 
 # We can't easily run do_configure (interactive), but we can verify
@@ -457,7 +540,7 @@ else
   fail "script missing chmod 600 on config file"
 fi
 
-# ── 15. Security hardening presence checks ──────────────────
+# ── 16. Security hardening presence checks ──────────────────
 section "Security hardening — code presence"
 
 if grep -q 'validate_shell_safe' "$S3CP"; then
@@ -486,7 +569,31 @@ else
   fail "--no-absolute-names: expected ≥2, found $tar_extract_count"
 fi
 
-# ── 16. Flag override priority ──────────────────────────────
+if grep -q 'generate_s3_put_presigned_url' "$S3CP"; then
+  pass "pull uses a local presigned PUT URL generator"
+else
+  fail "pull missing local presigned PUT URL generator"
+fi
+
+if grep -q 'aws configure export-credentials --format process' "$S3CP"; then
+  pass "pull derives presign credentials from the active AWS CLI identity"
+else
+  fail "pull missing AWS credential export for presigning"
+fi
+
+if ! grep -q 'aws s3api put-object' "$S3CP"; then
+  pass "pull does not require instance-side AWS CLI uploads"
+else
+  fail "pull still requires instance-side AWS CLI uploads"
+fi
+
+if ! grep -q 'generate-presigned-url' "$S3CP"; then
+  pass "script no longer uses unsupported aws s3api generate-presigned-url"
+else
+  fail "script still uses unsupported aws s3api generate-presigned-url"
+fi
+
+# ── 17. Flag override priority ──────────────────────────────
 section "Config priority — flag overrides env var"
 
 # --bucket flag should override S3CP_BUCKET env var
@@ -498,7 +605,7 @@ else
   fail "--bucket flag didn't override empty S3CP_BUCKET" "$out"
 fi
 
-# ── 17. Cleanup warning ────────────────────────────────────
+# ── 18. Cleanup warning ────────────────────────────────────
 section "Cleanup warning — code presence"
 
 if grep -q 'warn "Failed to clean up S3 object' "$S3CP"; then
@@ -507,7 +614,7 @@ else
   fail "s3_cleanup missing warning on failure"
 fi
 
-# ── 18. IAM policy least privilege ──────────────────────────
+# ── 19. IAM policy least privilege ──────────────────────────
 section "IAM policy — least privilege"
 
 policy="$PROJECT_DIR/iam/policy-user.json"
@@ -528,6 +635,13 @@ if [[ -f "$policy" ]]; then
   done
 else
   fail "IAM policy file not found: $policy"
+fi
+
+instance_policy="$PROJECT_DIR/iam/policy-instance.json"
+if [[ ! -f "$instance_policy" ]]; then
+  pass "no separate instance IAM policy template is required"
+else
+  fail "unexpected instance IAM policy file present: $instance_policy"
 fi
 
 

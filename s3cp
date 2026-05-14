@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-S3CP_VERSION="1.0.0"
+S3CP_VERSION="1.0.2"
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/s3cp/config"
 
 # ── Load config file (key=value, # comments ignored) ────────
@@ -84,6 +84,114 @@ build_aws_opts() {
   if [[ -n "$AWS_PROFILE" ]]; then
     AWS_OPTS+=( --profile "$AWS_PROFILE" )
   fi
+}
+
+sigv4_now() {
+  printf '%s %s\n' "$(date -u +%Y%m%dT%H%M%SZ)" "$(date -u +%Y%m%d)"
+}
+
+uri_encode() {
+  local input="$1"
+  local keep_slash="${2:-false}"
+  local out=""
+  local i char hex
+  local LC_ALL=C
+
+  for ((i=0; i<${#input}; i++)); do
+    char="${input:i:1}"
+    case "$char" in
+      [a-zA-Z0-9.~_-])
+        out+="$char"
+        ;;
+      /)
+        if [[ "$keep_slash" == true ]]; then
+          out+="/"
+        else
+          out+="%2F"
+        fi
+        ;;
+      *)
+        hex=$(printf '%s' "$char" | od -An -tx1 | tr -d ' \n')
+        out+="%${hex^^}"
+        ;;
+    esac
+  done
+
+  printf '%s' "$out"
+}
+
+sha256_hex() {
+  printf '%s' "$1" | openssl dgst -sha256 -hex | awk '{print $NF}'
+}
+
+hmac_sha256_hex_key() {
+  printf '%s' "$2" | openssl dgst -sha256 -mac HMAC -macopt "key:$1" -hex | awk '{print $NF}'
+}
+
+hmac_sha256_hexkey() {
+  printf '%s' "$2" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$1" -hex | awk '{print $NF}'
+}
+
+generate_s3_put_presigned_url() {
+  local bucket="$1"
+  local key="$2"
+  local expires_in="$3"
+
+  local credentials_json
+  if ! credentials_json=$(aws configure export-credentials --format process "${AWS_OPTS[@]}" --no-cli-pager); then
+    err "Failed to export AWS credentials for presigned URL generation"
+    exit 1
+  fi
+
+  local aws_access_key_id aws_secret_access_key aws_session_token
+  aws_access_key_id=$(printf '%s' "$credentials_json" | jq -r '.AccessKeyId // empty')
+  aws_secret_access_key=$(printf '%s' "$credentials_json" | jq -r '.SecretAccessKey // empty')
+  aws_session_token=$(printf '%s' "$credentials_json" | jq -r '.SessionToken // empty')
+
+  if [[ -z "$aws_access_key_id" || -z "$aws_secret_access_key" ]]; then
+    err "Failed to parse AWS credentials for presigned URL generation"
+    exit 1
+  fi
+
+  local amz_date date_stamp
+  read -r amz_date date_stamp <<< "$(sigv4_now)"
+
+  local algorithm="AWS4-HMAC-SHA256"
+  local service="s3"
+  local credential_scope="${date_stamp}/${AWS_REGION}/${service}/aws4_request"
+  local host="s3.${AWS_REGION}.amazonaws.com"
+  local canonical_uri="/$(uri_encode "$bucket")/$(uri_encode "$key" true)"
+
+  local canonical_query
+  canonical_query="X-Amz-Algorithm=$(uri_encode "$algorithm")"
+  canonical_query+="&X-Amz-Credential=$(uri_encode "${aws_access_key_id}/${credential_scope}")"
+  canonical_query+="&X-Amz-Date=$(uri_encode "$amz_date")"
+  canonical_query+="&X-Amz-Expires=$(uri_encode "$expires_in")"
+  if [[ -n "$aws_session_token" ]]; then
+    canonical_query+="&X-Amz-Security-Token=$(uri_encode "$aws_session_token")"
+  fi
+  canonical_query+="&X-Amz-SignedHeaders=host"
+
+  local canonical_request
+  canonical_request=$(printf 'PUT\n%s\n%s\nhost:%s\n\nhost\nUNSIGNED-PAYLOAD' \
+    "$canonical_uri" "$canonical_query" "$host")
+
+  local string_to_sign
+  string_to_sign=$(printf '%s\n%s\n%s\n%s' \
+    "$algorithm" \
+    "$amz_date" \
+    "$credential_scope" \
+    "$(sha256_hex "$canonical_request")")
+
+  local k_date k_region k_service k_signing signature
+  k_date=$(hmac_sha256_hex_key "AWS4${aws_secret_access_key}" "$date_stamp")
+  k_region=$(hmac_sha256_hexkey "$k_date" "$AWS_REGION")
+  k_service=$(hmac_sha256_hexkey "$k_region" "$service")
+  k_signing=$(hmac_sha256_hexkey "$k_service" "aws4_request")
+  signature=$(hmac_sha256_hexkey "$k_signing" "$string_to_sign")
+
+  printf 'https://%s%s?%s&X-Amz-Signature=%s\n' \
+    "$host" "$canonical_uri" "$canonical_query" "$signature"
 }
 
 usage() {
@@ -444,13 +552,7 @@ do_pull() {
   # Step 1: Generate presigned PUT URL and send curl upload command to instance
   info "Generating presigned URL…"
   local presigned_url
-  presigned_url=$(aws s3api generate-presigned-url \
-    --bucket "$S3_BUCKET" \
-    --key "$s3_key" \
-    --expires-in "$PRESIGN_EXPIRY" \
-    --http-method PUT \
-    "${AWS_OPTS[@]}" \
-    --output text)
+  presigned_url=$(generate_s3_put_presigned_url "$S3_BUCKET" "$s3_key" "$PRESIGN_EXPIRY")
 
   info "Sending upload command to instance…"
   validate_shell_safe "filename" "$filename"
@@ -521,6 +623,7 @@ do_pull() {
 require_cmd aws
 require_cmd jq
 require_cmd tar
+require_cmd openssl
 
 # ── Argument parsing ─────────────────────────────────────────
 [[ $# -lt 1 ]] && usage 1
